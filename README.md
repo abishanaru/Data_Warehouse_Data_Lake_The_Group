@@ -54,6 +54,13 @@ Located in AWS_Glue_functions_clean-data.
 
 **Transformation:** The jobs perform data quality checks, clean the data (type casting, handling nulls), and store the result in the clean/ folder in S3.
 
+**3. Analytics (Amazon Athena)**
+After the data has been cleaned and stored in S3, an analytics layer is implemented using **Amazon Athena**.
+
+**Process:** Athena external tables reference the cleaned datasets in S3. Analytical logic required for the project is implemented as SQL views.
+
+**Purpose:** These views aggregate and prepare the data to answer the defined research questions (RQ1–RQ4) and serve as the data source for downstream analysis and visualization.
+
 ---
 
 ## 📊 Analytics Layer (Amazon Athena)
@@ -128,15 +135,35 @@ Follow these steps to recreate the entire pipeline in your own AWS environment.
 
 **Step 5: Set up Data Cleaning (AWS Glue)**
 
-1. Locate code in: AWS_Glue_functions_clean-data
-2. Navigate to the AWS Glue Console.
-3. Create a generic Python Shell job.
-4. Paste the code from the repository folder.
-5. Permissions: Ensure the Glue Role has s3:GetObject (on raw) and s3:PutObject (on cleaned).
-6. Configuration:
+1. Locate the Glue job scripts in the repository folder:
 
-   * Source path: s3://[your-bucket]/raw/
-   * Destination path: s3://[your-bucket]/cleaned_data/
+   ```text
+   AWS_Glue_functions_clean-data/
+   ```
+
+2. Open the **AWS Glue Console** and navigate to **Jobs → Add job**.
+
+3. Create a new job with the following settings:
+
+   * **Job type:** Python Shell
+   * **Glue version:** Default
+   * **IAM Role:** Glue role with S3 access
+
+4. Copy the full Python script from the repository and paste it into the job editor.
+
+5. Ensure the IAM role attached to the Glue job has the following permissions:
+
+   ```text
+   s3:GetObject  on s3://<your-bucket>/raw/*
+   s3:PutObject  on s3://<your-bucket>/cleaned_data/*
+   ```
+
+6. Configure the input and output paths directly in the script (or as job parameters, if supported):
+
+   ```text
+   SOURCE_PATH = "s3://<your-bucket>/raw/"
+   DESTINATION_PATH = "s3://<your-bucket>/cleaned_data/"
+   ```
 
 ## 🕹 Usage / Running the Pipeline
 
