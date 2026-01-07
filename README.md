@@ -1,6 +1,7 @@
 # Data Warehouse & Data Lake Project
 
-**Course:** Data Warehouse and Data Lake
+**Course:** Data Warehouse and Data Lake Systems
+
 **Group:** The Group
 
 👥 **Team Members**
