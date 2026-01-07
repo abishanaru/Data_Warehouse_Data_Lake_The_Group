@@ -1,0 +1,214 @@
+-- ============================================================
+-- Project: Zurich Spending Dashboard (DW/DL)
+-- Engine : Amazon Athena (Trino/Presto SQL)
+-- Schema : datalake_clean
+-- Purpose: Create views used in Tableau dashboards for RQ1–RQ4
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- (Optional) Set your schema in Athena UI instead of hardcoding
+-- ------------------------------------------------------------
+-- USE datalake_clean;
+
+-- ============================================================
+-- VIEW 1: Base enrichment for spending table
+-- Table: datalake_clean.sachkonto2stellig_clean
+-- Adds:
+--  - impact_category (Citizen Impact vs Overhead)
+--  - accounts / budget / supplementary_credits measures
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_sachkonto2stellig_enriched AS
+SELECT
+  t.*,
+
+  -- Impact classification based on Sachkonto groups (as in Tableau calc)
+  CASE
+    WHEN CAST(t.sachkonto AS VARCHAR) IN ('30','31','33','34','35','36','39')
+      THEN 'Citizen Impact'
+    ELSE 'Overhead'
+  END AS impact_category,
+
+  -- Measures (row-level; aggregate later in dashboard views)
+  CASE WHEN t.betragstyp = 'RECHNUNG' THEN t.betrag END AS accounts_amount,
+  CASE WHEN t.betragstyp = 'GEMEINDERAT_BESCHLUSS' THEN t.betrag END AS budget_amount,
+  CASE WHEN t.betragstyp = 'STADTRAT_ANTRAG' THEN t.betrag END AS supplementary_credits_amount
+
+FROM datalake_clean.sachkonto2stellig_clean t;
+
+-- ============================================================
+-- RQ1: Expenditure Trends
+-- How have expenditures changed since 2019 in terms of budget,
+-- accounts, and supplementary credits?
+-- Output for Tableau line chart by year + type
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_rq1_expenditure_trends AS
+SELECT
+  CAST(jahr AS INTEGER) AS year,
+  'Accounts' AS type,
+  SUM(COALESCE(accounts_amount, 0)) AS expenditure_mchf
+FROM datalake_clean.v_sachkonto2stellig_enriched
+GROUP BY 1
+
+UNION ALL
+
+SELECT
+  CAST(jahr AS INTEGER) AS year,
+  'Budget' AS type,
+  SUM(COALESCE(budget_amount, 0)) AS expenditure_mchf
+FROM datalake_clean.v_sachkonto2stellig_enriched
+GROUP BY 1
+
+UNION ALL
+
+SELECT
+  CAST(jahr AS INTEGER) AS year,
+  'Supplementary Credits' AS type,
+  SUM(COALESCE(supplementary_credits_amount, 0)) AS expenditure_mchf
+FROM datalake_clean.v_sachkonto2stellig_enriched
+GROUP BY 1;
+
+-- ============================================================
+-- RQ2: Decisions & Spending
+-- How strongly do parliamentary decisions coincide with
+-- expenditure changes?
+--
+-- RQ2.1: Year-to-year spending change (delta)
+-- Uses total expenditure per year (ABS optional if you want)
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_rq2_spending_change_yoy AS
+WITH yearly AS (
+  SELECT
+    CAST(jahr AS INTEGER) AS year,
+    SUM(betrag) AS total_expenditure
+  FROM datalake_clean.sachkonto2stellig_clean
+  GROUP BY 1
+)
+SELECT
+  year,
+  total_expenditure
+    - LAG(total_expenditure) OVER (ORDER BY year) AS expenditure_change
+FROM yearly
+ORDER BY year;
+
+-- ============================================================
+-- RQ2.2: Decisions per year
+-- Table: datalake_clean.paris_abstimmungen_clean
+-- NOTE: "year" type must match the underlying parquet (fix schema first)
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_rq2_decisions_per_year AS
+SELECT
+  CAST(year AS INTEGER) AS year,
+  COUNT(*) AS number_of_decisions
+FROM datalake_clean.paris_abstimmungen_clean
+GROUP BY 1
+ORDER BY 1;
+
+-- ============================================================
+-- RQ2 Combined (optional):
+-- One table with spending delta + decision count (left join)
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_rq2_spending_vs_decisions AS
+SELECT
+  s.year,
+  s.expenditure_change,
+  d.number_of_decisions
+FROM datalake_clean.v_rq2_spending_change_yoy s
+LEFT JOIN datalake_clean.v_rq2_decisions_per_year d
+  ON d.year = s.year
+ORDER BY s.year;
+
+-- ============================================================
+-- RQ3: Impact vs Overhead
+-- Can the citizen-impacting share of expenditure be separated
+-- from overhead using GL account groups, and how large is this
+-- share across policy domains?
+--
+-- Output: Spend by department and impact category
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_rq3_impact_by_department AS
+SELECT
+  department,
+  impact_category,
+  SUM(betrag) AS spend_chf
+FROM datalake_clean.v_sachkonto2stellig_enriched
+GROUP BY 1, 2;
+
+-- ============================================================
+-- RQ3 (optional share view):
+-- Citizen impact share per department
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_rq3_citizen_impact_share_by_department AS
+SELECT
+  department,
+  SUM(CASE WHEN impact_category = 'Citizen Impact' THEN betrag ELSE 0 END) * 1.0
+    / NULLIF(SUM(betrag), 0) AS citizen_impact_share
+FROM datalake_clean.v_sachkonto2stellig_enriched
+GROUP BY 1;
+
+-- ============================================================
+-- SURVEY: Score mapping + numeric conversion (base view)
+-- Table: datalake_clean.survey_clean
+--
+-- You showed the mapping for "Beliebtheit Wohnort Stadt ZH"
+-- Repeat pattern for all needed questions.
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_survey_scored AS
+SELECT
+  s.*,
+
+  -- Example mapping (Beliebtheit Wohnort Stadt ZH)
+  CASE s.a2001aa01
+    WHEN 'Note 1 (überhaupt nicht gut)' THEN 1
+    WHEN 'Note 2' THEN 2
+    WHEN 'Note 3' THEN 3
+    WHEN 'Note 4' THEN 4
+    WHEN 'Note 5' THEN 5
+    WHEN 'Note 6 (sehr gut)' THEN 6
+    ELSE NULL
+  END AS score_beliebtheit_zh,
+
+  CAST(
+    CASE s.a2001aa01
+      WHEN 'Note 1 (überhaupt nicht gut)' THEN 1
+      WHEN 'Note 2' THEN 2
+      WHEN 'Note 3' THEN 3
+      WHEN 'Note 4' THEN 4
+      WHEN 'Note 5' THEN 5
+      WHEN 'Note 6 (sehr gut)' THEN 6
+      ELSE NULL
+    END
+    AS DOUBLE
+  ) AS float_beliebtheit_zh,
+
+  -- Example: Lebensqualität (a2002aa01) - same mapping
+  CAST(
+    CASE s.a2002aa01
+      WHEN 'Note 1 (überhaupt nicht gut)' THEN 1
+      WHEN 'Note 2' THEN 2
+      WHEN 'Note 3' THEN 3
+      WHEN 'Note 4' THEN 4
+      WHEN 'Note 5' THEN 5
+      WHEN 'Note 6 (sehr gut)' THEN 6
+      ELSE NULL
+    END
+    AS DOUBLE
+  ) AS float_quality_of_life
+
+FROM datalake_clean.survey_clean s;
+
+-- ============================================================
+-- RQ4: Satisfaction Link
+-- Do domains with rising expenditures also show higher citizen
+-- satisfaction indices in the same or subsequent year?
+--
+-- Minimal output for Tableau: average satisfaction by year and domain.
+-- NOTE: Replace the domain fields below with the survey columns you use.
+-- ============================================================
+CREATE OR REPLACE VIEW datalake_clean.v_rq4_satisfaction_by_year AS
+SELECT
+  CAST(jahr AS INTEGER) AS year,
+  AVG(float_quality_of_life) AS avg_quality_of_life,
+  AVG(float_beliebtheit_zh)  AS avg_beliebtheit_zh
+FROM datalake_clean.v_survey_scored
+GROUP BY 1
+ORDER BY 1;
